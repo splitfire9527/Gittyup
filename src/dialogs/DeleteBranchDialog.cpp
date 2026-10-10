@@ -81,6 +81,7 @@ DeleteBranchDialog::DeleteBranchDialog(const git::Branch &branch,
               });
     }
 
+    emit aboutToRemove();
     git::Branch(branch).remove();
   });
 

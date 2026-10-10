@@ -40,6 +40,44 @@ bool TreeProxy::setData(const QModelIndex &index, const QVariant &value,
       ->setData(sourceIndex, value, role, ignoreIndexChanges);
 }
 
+void TreeProxy::setEolFilter(EolFilter filter, const QSet<QString> &paths) {
+#if QT_VERSION >= QT_VERSION_CHECK(6, 10, 0)
+  beginFilterChange();
+  mEolFilter = filter;
+  mEolOnly = paths;
+  endFilterChange(QSortFilterProxyModel::Direction::Rows);
+#else
+  mEolFilter = filter;
+  mEolOnly = paths;
+  invalidateFilter();
+#endif
+}
+
+bool TreeProxy::matchesEol(const QModelIndex &index) const {
+  QString path = sourceModel()->data(index, Qt::EditRole).toString();
+  if (mEolOnly.contains(path))
+    return true;
+  int rows = sourceModel()->rowCount(index);
+  for (int i = 0; i < rows; ++i) {
+    if (matchesEol(sourceModel()->index(i, 0, index)))
+      return true;
+  }
+  return false;
+}
+
+bool TreeProxy::isOnlyEol(const QModelIndex &index) const {
+  int rows = sourceModel()->rowCount(index);
+  if (rows == 0) {
+    return mEolOnly.contains(
+        sourceModel()->data(index, Qt::EditRole).toString());
+  }
+  for (int i = 0; i < rows; ++i) {
+    if (!isOnlyEol(sourceModel()->index(i, 0, index)))
+      return false;
+  }
+  return true;
+}
+
 bool TreeProxy::filterAcceptsRow(int source_row,
                                  const QModelIndex &source_parent) const {
   QModelIndex index = sourceModel()->index(source_row, 0, source_parent);
@@ -65,5 +103,9 @@ bool TreeProxy::filterAcceptsRow(int source_row,
   else if (!mStaged && state == Qt::CheckState::Checked)
     return false;
 
-  return true;
+  if (mStaged || mEolFilter == EolFilter::All)
+    return true;
+  if (mEolFilter == EolFilter::Only)
+    return matchesEol(index);
+  return !isOnlyEol(index);
 }

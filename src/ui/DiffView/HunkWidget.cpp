@@ -141,7 +141,7 @@ _HunkWidget::Header::Header(const git::Diff &diff, const git::Patch &patch,
   buttons->addWidget(mButton);
 
   QHBoxLayout *layout = new QHBoxLayout(this);
-  layout->setContentsMargins(4, 4, 4, 4);
+  layout->setContentsMargins(8, 1, 4, 1);
   layout->addWidget(mCheck);
   layout->addWidget(label, 1);
   layout->addStretch();
@@ -254,7 +254,7 @@ HunkWidget::HunkWidget(DiffView *view, const git::Diff &diff,
         // Read file.
         QFile file(path);
         if (file.open(QFile::ReadOnly))
-          editor.load(path, repo.decode(file.readAll()));
+          editor.load(path, repo.decode(file.readAll(), mPatch.name()));
       }
 
       if (!editor.length())
@@ -280,9 +280,8 @@ HunkWidget::HunkWidget(DiffView *view, const git::Diff &diff,
       if (!file.open(QFile::WriteOnly))
         return;
 
-      QTextStream out(&file);
-      out.setEncoding(repo.encoding());
-      out << editor.getText(editor.textLength());
+      file.write(repo.encode(
+          QString::fromUtf8(editor.getText(editor.textLength())), mPatch.name()));
       file.commit();
 
       mPatch.setConflictResolution(mIndex, git::Patch::Unresolved);
@@ -394,7 +393,7 @@ HunkWidget::HunkWidget(DiffView *view, const git::Diff &diff,
               // Read file.
               QFile file(path);
               if (file.open(QFile::ReadOnly))
-                editor.load(path, repo.decode(file.readAll()));
+                editor.load(path, repo.decode(file.readAll(), mPatch.name()));
             }
 
             if (!editor.length())
@@ -410,9 +409,9 @@ HunkWidget::HunkWidget(DiffView *view, const git::Diff &diff,
             if (!file.open(QFile::WriteOnly))
               return;
 
-            QTextStream out(&file);
-            out.setEncoding(repo.encoding());
-            out << editor.getText(editor.textLength());
+            file.write(repo.encode(
+                QString::fromUtf8(editor.getText(editor.textLength())),
+                mPatch.name()));
             file.commit();
 
             table->hide();
@@ -698,7 +697,7 @@ void HunkWidget::load(git::Patch &staged, bool force) {
     QString name = mPatch.name();
     QFile dev(repo.workdir().filePath(name));
     if (dev.open(QFile::ReadOnly)) {
-      mEditor->load(name, repo.decode(dev.readAll()));
+      mEditor->load(name, repo.decode(dev.readAll(), name));
 
       int count = mEditor->lineCount();
       QByteArray lines = QByteArray::number(count);
@@ -762,7 +761,7 @@ void HunkWidget::load(git::Patch &staged, bool force) {
   //    content.chop(1);
 
   // Add text.
-  mEditor->setText(repo.decode(content).toStdString().c_str());
+  mEditor->setText(repo.decode(content, mPatch.name()).toStdString().c_str());
 
   // Calculate margin width.
   int width = 0;
@@ -1075,6 +1074,41 @@ void HunkWidget::setEditorLineInfos(QList<Line> &lines,
             mEditor->indicatorFillRange(pos, newTokens.at(last).pos - pos);
           }
         }
+      }
+
+      QByteArray oldContent = mPatch.lineContent(mIndex, lidx);
+      QByteArray newContent = mPatch.lineContent(mIndex, matchingLine);
+      auto strip = [](QByteArray line) {
+        if (line.endsWith("\r\n"))
+          line.chop(2);
+        else if (line.endsWith('\n') || line.endsWith('\r'))
+          line.chop(1);
+        return line;
+      };
+      auto label = [](const QByteArray &line) {
+        if (line.endsWith("\r\n"))
+          return QString("CRLF");
+        if (line.endsWith('\n'))
+          return QString("LF");
+        if (line.endsWith('\r'))
+          return QString("CR");
+        return QString("none");
+      };
+      if (strip(oldContent) == strip(newContent) &&
+          label(oldContent) != label(newContent)) {
+        int editorLine = 0;
+        for (int i = 0; i < matchingLine; ++i) {
+          char origin = lines.at(i).origin();
+          if (origin == GIT_DIFF_LINE_CONTEXT_EOFNL ||
+              origin == GIT_DIFF_LINE_ADD_EOFNL ||
+              origin == GIT_DIFF_LINE_DEL_EOFNL)
+            continue;
+          ++editorLine;
+        }
+        QString note = label(oldContent) + QString::fromUtf8("→") + label(newContent);
+        QByteArray margin = mEditor->marginText(editorLine);
+        margin += " " + note.toUtf8();
+        mEditor->marginSetText(editorLine, margin);
       }
     }
   }

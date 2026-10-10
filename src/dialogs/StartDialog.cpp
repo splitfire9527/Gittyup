@@ -14,6 +14,7 @@
 #include "app/Application.h"
 #include "conf/RecentRepositories.h"
 #include "conf/RecentRepository.h"
+#include "conf/RepositoryGroups.h"
 #include "host/Accounts.h"
 #include "host/Repository.h"
 #include "ui/Footer.h"
@@ -28,16 +29,20 @@
 #include <QDesktopServices>
 #include <QDialogButtonBox>
 #include <QFileDialog>
+#include <QFileInfo>
+#include <QFont>
 #include <QHBoxLayout>
 #include <QIcon>
+#include <QInputDialog>
 #include <QLabel>
 #include <QLineEdit>
-#include <QListView>
 #include <QMessageBox>
+#include <QMimeData>
 #include <QMenu>
 #include <QMultiMap>
 #include <QPushButton>
 #include <QPointer>
+#include <QSet>
 #include <QSettings>
 #include <QStyledItemDelegate>
 #include <QTimer>
@@ -55,13 +60,13 @@ const QString kCloudIcon = ":/cloud.png";
 
 enum Role { KindRole = Qt::UserRole, AccountRole, RepositoryRole };
 
-class RepoModel : public QAbstractListModel {
+class RepoModel : public QAbstractItemModel {
   Q_OBJECT
 
 public:
   enum Row { Clone, Open, Init };
 
-  RepoModel(QObject *parent = nullptr) : QAbstractListModel(parent) {
+  RepoModel(QObject *parent = nullptr) : QAbstractItemModel(parent) {
     RecentRepositories *repos = RecentRepositories::instance();
     connect(repos, &RecentRepositories::repositoryAboutToBeAdded, this,
             &RepoModel::beginResetModel);
@@ -71,6 +76,12 @@ public:
             &RepoModel::beginResetModel);
     connect(repos, &RecentRepositories::repositoryRemoved, this,
             &RepoModel::endResetModel);
+
+    RepositoryGroups *groups = RepositoryGroups::instance();
+    connect(groups, &RepositoryGroups::groupsChanged, this, [this] {
+      beginResetModel();
+      endResetModel();
+    });
   }
 
   void setShowFullPath(bool enabled) {
@@ -79,62 +90,215 @@ public:
     endResetModel();
   }
 
+  QModelIndex index(int row, int column,
+                    const QModelIndex &parent = QModelIndex()) const override {
+    if (row < 0 || column != 0)
+      return QModelIndex();
+    if (!parent.isValid()) {
+      if (isEmpty())
+        return createIndex(row, column);
+      RepositoryGroups *groups = RepositoryGroups::instance();
+      if (row < groups->count())
+        return createIndex(row, column, groups->at(row));
+      return createIndex(row, column);
+    }
+
+    QObject *ptr = static_cast<QObject *>(parent.internalPointer());
+    if (RepositoryGroup *group = qobject_cast<RepositoryGroup *>(ptr)) {
+      if (row >= group->count())
+        return QModelIndex();
+      return createIndex(row, column, group->repository(row));
+    }
+
+    if (!ptr && parent.row() == ungroupedRow()) {
+      QList<RecentRepository *> repos = ungrouped();
+      if (row >= repos.size())
+        return QModelIndex();
+      return createIndex(row, column, repos.at(row));
+    }
+    return QModelIndex();
+  }
+
+  QModelIndex parent(const QModelIndex &child) const override {
+    QObject *ptr = static_cast<QObject *>(child.internalPointer());
+    if (GroupRepository *repo = qobject_cast<GroupRepository *>(ptr)) {
+      RepositoryGroups *groups = RepositoryGroups::instance();
+      return createIndex(groups->indexOf(repo->group()), 0, repo->group());
+    }
+    if (qobject_cast<RecentRepository *>(ptr))
+      return createIndex(ungroupedRow(), 0);
+    return QModelIndex();
+  }
+
   int rowCount(const QModelIndex &parent = QModelIndex()) const override {
-    RecentRepositories *repos = RecentRepositories::instance();
-    return (repos->count() > 0) ? repos->count() : 3;
+    if (!parent.isValid()) {
+      if (isEmpty())
+        return 3;
+      int rows = RepositoryGroups::instance()->count();
+      if (!ungrouped().isEmpty())
+        ++rows;
+      return rows;
+    }
+
+    QObject *ptr = static_cast<QObject *>(parent.internalPointer());
+    if (RepositoryGroup *group = qobject_cast<RepositoryGroup *>(ptr))
+      return group->count();
+    if (!ptr && parent.row() == ungroupedRow())
+      return ungrouped().size();
+    return 0;
+  }
+
+  int columnCount(const QModelIndex &parent = QModelIndex()) const override {
+    Q_UNUSED(parent)
+    return 1;
   }
 
   QVariant data(const QModelIndex &index,
                 int role = Qt::DisplayRole) const override {
-    RecentRepositories *repos = RecentRepositories::instance();
-    if (repos->count() <= 0) {
-      switch (role) {
-        case Qt::DisplayRole:
-          switch (index.row()) {
-            case Clone:
-              return tr("Clone Repository");
-            case Open:
-              return tr("Open Existing Repository");
-            case Init:
-              return tr("Initialize New Repository");
-          }
+    if (!index.isValid())
+      return QVariant();
 
-        case Qt::DecorationRole: {
-          switch (index.row()) {
-            case Clone:
-              return QIcon(":/clone.png");
-            case Open:
-              return QIcon(":/open.png");
-            case Init:
-              return QIcon(":/new.png");
-          }
-        }
+    QObject *ptr = static_cast<QObject *>(index.internalPointer());
+    if (GroupRepository *repo = qobject_cast<GroupRepository *>(ptr)) {
+      if (role == Qt::DisplayRole)
+        return mShowFullPath ? repo->path() : QFileInfo(repo->path()).fileName();
+      if (role == Qt::UserRole || role == Qt::ToolTipRole)
+        return repo->path();
+      return QVariant();
+    }
+    if (RecentRepository *repo = qobject_cast<RecentRepository *>(ptr)) {
+      if (role == Qt::DisplayRole)
+        return mShowFullPath ? repo->gitpath() : repo->name();
+      if (role == Qt::UserRole || role == Qt::ToolTipRole)
+        return repo->gitpath();
+      return QVariant();
+    }
+    if (RepositoryGroup *group = qobject_cast<RepositoryGroup *>(ptr)) {
+      if (role == Qt::DisplayRole)
+        return group->name();
+      if (role == Qt::FontRole) {
+        QFont font;
+        font.setBold(true);
+        return font;
       }
-
       return QVariant();
     }
 
-    RecentRepository *repo = repos->repository(index.row());
-    switch (role) {
-      case Qt::DisplayRole:
-        return mShowFullPath ? repo->gitpath() : repo->name();
-
-      case Qt::UserRole:
-        return repo->gitpath();
+    if (isEmpty()) {
+      if (role == Qt::DisplayRole) {
+        switch (index.row()) {
+          case Clone:
+            return tr("Clone Repository");
+          case Open:
+            return tr("Open Existing Repository");
+          case Init:
+            return tr("Initialize New Repository");
+        }
+      }
+      if (role == Qt::DecorationRole) {
+        switch (index.row()) {
+          case Clone:
+            return QIcon(":/clone.png");
+          case Open:
+            return QIcon(":/open.png");
+          case Init:
+            return QIcon(":/new.png");
+        }
+      }
+      return QVariant();
     }
 
+    if (role == Qt::DisplayRole && index.row() == ungroupedRow())
+      return tr("Ungrouped");
+    if (role == Qt::FontRole && index.row() == ungroupedRow()) {
+      QFont font;
+      font.setBold(true);
+      return font;
+    }
     return QVariant();
   }
 
   Qt::ItemFlags flags(const QModelIndex &index) const override {
-    Qt::ItemFlags flags = QAbstractItemModel::flags(index);
-    if (RecentRepositories::instance()->count() <= 0)
-      flags &= ~Qt::ItemIsSelectable;
+    Qt::ItemFlags itemFlags = QAbstractItemModel::flags(index);
+    if (isEmpty())
+      return itemFlags & ~Qt::ItemIsSelectable;
+    if (!index.data(Qt::UserRole).toString().isEmpty())
+      itemFlags |= Qt::ItemIsDragEnabled;
+    itemFlags |= Qt::ItemIsDropEnabled;
+    return itemFlags;
+  }
 
-    return flags;
+  Qt::DropActions supportedDropActions() const override { return Qt::MoveAction; }
+
+  QStringList mimeTypes() const override {
+    return {"application/x-gittyup-repo"};
+  }
+
+  QMimeData *mimeData(const QModelIndexList &indexes) const override {
+    auto *data = new QMimeData;
+    QStringList paths;
+    for (const QModelIndex &index : indexes) {
+      QString path = index.data(Qt::UserRole).toString();
+      if (!path.isEmpty())
+        paths.append(path);
+    }
+    data->setData("application/x-gittyup-repo", paths.join('\n').toUtf8());
+    return data;
+  }
+
+  bool dropMimeData(const QMimeData *data, Qt::DropAction action, int row,
+                    int column, const QModelIndex &parent) override {
+    Q_UNUSED(action)
+    Q_UNUSED(row)
+    Q_UNUSED(column)
+    if (!data)
+      return false;
+    const QStringList paths =
+        QString::fromUtf8(data->data("application/x-gittyup-repo"))
+            .split('\n', Qt::SkipEmptyParts);
+    if (paths.isEmpty())
+      return false;
+
+    RepositoryGroups *groups = RepositoryGroups::instance();
+    RepositoryGroup *group = nullptr;
+    QObject *ptr = static_cast<QObject *>(parent.internalPointer());
+    if (auto *repo = qobject_cast<GroupRepository *>(ptr))
+      group = repo->group();
+    else if (auto *named = qobject_cast<RepositoryGroup *>(ptr))
+      group = named;
+    else if (parent.parent().isValid())
+      group = qobject_cast<RepositoryGroup *>(
+          static_cast<QObject *>(parent.parent().internalPointer()));
+
+    for (const QString &path : paths) {
+      if (group)
+        groups->addPath(group, path);
+      else if (RepositoryGroup *current = groups->groupForPath(path))
+        current->removePath(path);
+    }
+    return true;
   }
 
 private:
+  bool isEmpty() const {
+    return RecentRepositories::instance()->count() == 0 &&
+           RepositoryGroups::instance()->count() == 0;
+  }
+
+  QList<RecentRepository *> ungrouped() const {
+    QList<RecentRepository *> result;
+    RecentRepositories *repos = RecentRepositories::instance();
+    RepositoryGroups *groups = RepositoryGroups::instance();
+    for (int i = 0; i < repos->count(); ++i) {
+      RecentRepository *repo = repos->repository(i);
+      if (!groups->containsPath(repo->gitpath()))
+        result.append(repo);
+    }
+    return result;
+  }
+
+  int ungroupedRow() const { return RepositoryGroups::instance()->count(); }
+
   bool mShowFullPath = false;
 };
 
@@ -364,6 +528,23 @@ protected:
   }
 };
 
+QStringList pathsUnder(const QModelIndex &index) {
+  QString path = index.data(Qt::UserRole).toString();
+  if (!path.isEmpty())
+    return {path};
+
+  QStringList paths;
+  if (!index.isValid() || !index.model())
+    return paths;
+  const QAbstractItemModel *model = index.model();
+  for (int i = 0; i < model->rowCount(index); ++i) {
+    QString child = model->index(i, 0, index).data(Qt::UserRole).toString();
+    if (!child.isEmpty())
+      paths.append(child);
+  }
+  return paths;
+}
+
 } // namespace
 
 StartDialog::StartDialog(QWidget *parent) : QDialog(parent) {
@@ -386,31 +567,45 @@ StartDialog::StartDialog(QWidget *parent) : QDialog(parent) {
   left->addWidget(subtitle);
   left->addStretch();
 
-  mRepoList = new QListView(this);
+  mRepoList = new QTreeView(this);
+  mRepoList->setHeaderHidden(true);
   mRepoList->setIconSize(QSize(32, 32));
   mRepoList->setSelectionMode(QAbstractItemView::ExtendedSelection);
-  connect(mRepoList, &QListView::clicked, this,
+  mRepoList->setDragEnabled(true);
+  mRepoList->setAcceptDrops(true);
+  mRepoList->setDropIndicatorShown(true);
+  mRepoList->setDragDropMode(QAbstractItemView::DragDrop);
+  mRepoList->setDefaultDropAction(Qt::MoveAction);
+  connect(mRepoList, &QTreeView::clicked, this,
           [this](const QModelIndex &index) {
-            if (!index.data(Qt::UserRole).isValid()) {
-              switch (index.row()) {
-                case RepoModel::Clone:
-                  mClone->trigger();
-                  break;
-                case RepoModel::Open:
-                  mOpen->trigger();
-                  break;
-                case RepoModel::Init:
-                  mInit->trigger();
-                  break;
-              }
+            bool empty = RecentRepositories::instance()->count() == 0 &&
+                         RepositoryGroups::instance()->count() == 0;
+            if (!empty || index.parent().isValid() ||
+                index.data(Qt::UserRole).isValid())
+              return;
+            switch (index.row()) {
+              case RepoModel::Clone:
+                mClone->trigger();
+                break;
+              case RepoModel::Open:
+                mOpen->trigger();
+                break;
+              case RepoModel::Init:
+                mInit->trigger();
+                break;
             }
           });
 
-  connect(mRepoList, &QListView::doubleClicked, this, &QDialog::accept);
+  connect(mRepoList, &QTreeView::doubleClicked, this,
+          [this](const QModelIndex &index) {
+            if (!pathsUnder(index).isEmpty())
+              accept();
+          });
 
   RepoModel *repoModel = new RepoModel(mRepoList);
   mRepoList->setModel(repoModel);
   connect(repoModel, &RepoModel::modelReset, this, [this] {
+    mRepoList->expandAll();
     mRepoList->setCurrentIndex(mRepoList->model()->index(0, 0));
   });
 
@@ -423,9 +618,28 @@ StartDialog::StartDialog(QWidget *parent) : QDialog(parent) {
                 return rhs.row() < lhs.row();
               });
 
-    // Remove selected indexes from settings.
-    for (const QModelIndex &index : indexes)
-      RecentRepositories::instance()->remove(index.row());
+    QList<RepositoryGroup *> groups;
+    QStringList paths;
+    for (const QModelIndex &index : indexes) {
+      if (auto *group = qobject_cast<RepositoryGroup *>(
+              static_cast<QObject *>(index.internalPointer())))
+        groups.append(group);
+      else if (!index.data(Qt::UserRole).toString().isEmpty())
+        paths.append(index.data(Qt::UserRole).toString());
+    }
+    for (const QString &path : paths) {
+      if (RepositoryGroup *group = RepositoryGroups::instance()->groupForPath(path))
+        group->removePath(path);
+      else {
+        RecentRepositories *repos = RecentRepositories::instance();
+        for (int i = repos->count() - 1; i >= 0; --i) {
+          if (QDir(repos->repository(i)->gitpath()) == QDir(path))
+            repos->remove(i);
+        }
+      }
+    }
+    for (RepositoryGroup *group : groups)
+      RepositoryGroups::instance()->remove(group);
   });
 
   QMenu *repoPlusMenu = new QMenu(this);
@@ -454,6 +668,15 @@ StartDialog::StartDialog(QWidget *parent) : QDialog(parent) {
     dialog->open();
   });
 
+  QAction *newGroup = repoPlusMenu->addAction(tr("New Group"));
+  connect(newGroup, &QAction::triggered, this, [this] {
+    bool ok = false;
+    QString name = QInputDialog::getText(this, tr("New Group"), tr("Name:"),
+                                         QLineEdit::Normal, QString(), &ok);
+    if (ok && !name.isEmpty())
+      RepositoryGroups::instance()->add(name);
+  });
+
   mInit = repoPlusMenu->addAction(tr("Initialize New Repository"));
   connect(mInit, &QAction::triggered, this, [this] {
     CloneDialog *dialog = new CloneDialog(CloneDialog::Init, this);
@@ -467,6 +690,28 @@ StartDialog::StartDialog(QWidget *parent) : QDialog(parent) {
 
   QMenu *repoContextMenu = new QMenu(this);
   mRepoFooter->setContextMenu(repoContextMenu);
+
+  QAction *renameGroup = repoContextMenu->addAction(tr("Rename Group"));
+  connect(renameGroup, &QAction::triggered, this, [this] {
+    QModelIndex index = mRepoList->currentIndex();
+    auto *group = qobject_cast<RepositoryGroup *>(
+        static_cast<QObject *>(index.internalPointer()));
+    if (!group)
+      return;
+    bool ok = false;
+    QString name =
+        QInputDialog::getText(this, tr("Rename Group"), tr("Name:"),
+                              QLineEdit::Normal, group->name(), &ok);
+    if (ok && !name.isEmpty())
+      group->setName(name);
+  });
+
+  QAction *openGroup = repoContextMenu->addAction(tr("Open All in Group"));
+  connect(openGroup, &QAction::triggered, this, [this] {
+    QModelIndex index = mRepoList->currentIndex();
+    if (!pathsUnder(index).isEmpty())
+      accept();
+  });
 
   QAction *clear = repoContextMenu->addAction(tr("Clear All"));
   connect(clear, &QAction::triggered,
@@ -608,8 +853,15 @@ void StartDialog::accept() {
   QModelIndexList hostIndexes = mHostTree->selectionModel()->selectedIndexes();
 
   QStringList paths;
-  for (const QModelIndex &index : repoIndexes)
-    paths.append(index.data(Qt::UserRole).toString());
+  QSet<QString> seen;
+  for (const QModelIndex &index : repoIndexes) {
+    for (const QString &path : pathsUnder(index)) {
+      if (seen.contains(path))
+        continue;
+      seen.insert(path);
+      paths.append(path);
+    }
+  }
 
   QModelIndexList uncloned;
   for (const QModelIndex &index : hostIndexes) {

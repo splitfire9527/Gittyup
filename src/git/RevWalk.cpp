@@ -48,7 +48,7 @@ bool RevWalk::push(const Reference &ref) {
   return commit.isValid() ? push(commit) : false;
 }
 
-Commit RevWalk::next(const QString &path) const {
+Commit RevWalk::next(const QString &path, bool exact) const {
   git_diff_options diffopts = GIT_DIFF_OPTIONS_INIT;
   diffopts.notify_cb = notify;
 
@@ -58,7 +58,7 @@ Commit RevWalk::next(const QString &path) const {
   if (!path.isEmpty()) {
     diffopts.pathspec.count = 1;
     diffopts.pathspec.strings = &data;
-    if (!path.contains(QRegularExpression("[*?]")))
+    if (exact && !path.contains(QRegularExpression("[*?]")))
       diffopts.flags |= GIT_DIFF_DISABLE_PATHSPEC_MATCH;
   }
 

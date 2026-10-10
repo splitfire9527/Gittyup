@@ -8,6 +8,7 @@
 //
 
 #include "BlameEditor.h"
+#include "FileHistoryWindow.h"
 #include "BlameMargin.h"
 #include "FindWidget.h"
 #include "MenuBar.h"
@@ -17,9 +18,12 @@
 #include "git/Blame.h"
 #include "git/Blob.h"
 #include "git/Commit.h"
+#include "git/Tree.h"
 #include "git/Index.h"
 #include "git/Repository.h"
 #include <QCloseEvent>
+#include <QUrl>
+#include <QUrlQuery>
 #include <QFile>
 #include <QFileDialog>
 #include <QSaveFile>
@@ -61,6 +65,34 @@ BlameEditor::BlameEditor(const git::Repository &repo, QWidget *parent)
   mMargin = new BlameMargin(mEditor, this);
   connect(mMargin, &BlameMargin::linkActivated, this,
           &BlameEditor::linkActivated);
+  connect(mEditor, &TextEditor::historyForSelection, this,
+          [this](int start, int end) {
+            if (mRepo.isValid() && !mName.isEmpty())
+              FileHistoryWindow::show(mRepo, mName, start + 1, qMax(start + 1, end - 1));
+          });
+  connect(mMargin, &BlameMargin::revisionAction, this,
+          [this](const QString &action, const git::Id &id, int line) {
+            if (!mRepo.isValid())
+              return;
+            git::Commit commit = mRepo.lookupCommit(id);
+            if (action == "previous" && commit.isValid() &&
+                !commit.parents().isEmpty()) {
+              git::Commit parent = commit.parents().first();
+              git::Blob blob = mRepo.lookupBlob(parent.tree().id(mName));
+              if (blob.isValid())
+                load(mName, blob, parent);
+            } else if (action == "changes" && commit.isValid()) {
+              QUrlQuery query;
+              query.addQueryItem("file", mName);
+              QUrl url;
+              url.setScheme("id");
+              url.setPath(id.toString());
+              url.setQuery(query);
+              emit linkActivated(url.toString());
+            } else if (action == "history") {
+              FileHistoryWindow::show(mRepo, mName, line + 1, line + 1);
+            }
+          });
 
   // Add find widget.
   mFind = new FindWidget(this, this);
@@ -154,7 +186,7 @@ bool BlameEditor::load(const QString &name, const git::Blob &blob,
 
   // Set editor text.
   mEditor->setReadOnly(false);
-  mEditor->load(name, mRepo.isValid() ? mRepo.decode(content) : content);
+  mEditor->load(name, mRepo.isValid() ? mRepo.decode(content, name) : QString::fromUtf8(content));
   mEditor->setReadOnly(blob.isValid());
 
   mMargin->setVisible(mRepo.isValid() && !content.isEmpty());
@@ -206,10 +238,12 @@ void BlameEditor::save() {
   if (!file.open(QFile::WriteOnly))
     return;
 
-  QTextStream out(&file);
-  if (mRepo.isValid())
-    out.setEncoding(mRepo.encoding());
-  out << mEditor->getText(mEditor->textLength());
+  if (mRepo.isValid()) {
+    QString text = QString::fromUtf8(mEditor->getText(mEditor->textLength()));
+    file.write(mRepo.encode(text, mName));
+  } else {
+    file.write(mEditor->getText(mEditor->textLength()));
+  }
   file.commit();
 
   mEditor->setSavePoint();

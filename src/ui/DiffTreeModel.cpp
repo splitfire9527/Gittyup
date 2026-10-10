@@ -9,6 +9,7 @@
 
 #include <array>
 #include "DiffTreeModel.h"
+#include "OperationLog.h"
 #include "conf/Settings.h"
 #include "git/Blob.h"
 #include "git/Diff.h"
@@ -330,12 +331,20 @@ bool DiffTreeModel::setData(const QModelIndex &index, const QVariant &value,
   return setData(index, value, role, false);
 }
 
-bool DiffTreeModel::discard(const QModelIndex &index) {
+bool DiffTreeModel::discard(const QModelIndex &index, bool recordUndo) {
   assert(index.isValid());
 
   Node *node = this->node(index);
   QList<int> list;
   node->patchIndices(list);
+
+  if (recordUndo && mDiff.isValid()) {
+    QStringList paths;
+    for (int patchIndex : list)
+      paths.append(mDiff.patch(patchIndex).name());
+    if (!paths.isEmpty())
+      OperationLog::instance()->captureFiles(mRepo, paths, tr("Discard"));
+  }
 
   QStringList trackedPatches;
   for (auto i : list) {

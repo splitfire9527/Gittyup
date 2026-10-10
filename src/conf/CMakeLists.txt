@@ -1,5 +1,12 @@
-add_library(conf ConfFile.cpp Settings.cpp Setting.cpp RecentRepositories.cpp
-                 RecentRepository.cpp)
+add_library(
+  conf
+  ConfFile.cpp
+  Settings.cpp
+  Setting.cpp
+  RecentRepositories.cpp
+  RecentRepository.cpp
+  RepositoryGroups.cpp
+  ../ui/FileManagerIntegration.cpp)
 
 target_link_libraries(conf lua Qt6::Core translation gittyupUtil)
 

@@ -13,6 +13,7 @@
 #include "git/Index.h"
 #include "git/Tree.h"
 #include "git/Repository.h"
+#include <QSet>
 #include <QSortFilterProxyModel>
 #include <QFileIconProvider>
 
@@ -31,6 +32,9 @@ public:
 
   void enableFilter(bool enable) { mFilter = enable; }
 
+  enum class EolFilter { All, Only, Exclude };
+  void setEolFilter(EolFilter filter, const QSet<QString> &paths);
+
   int columnCount(const QModelIndex &parent = QModelIndex()) const override {
     return sourceModel()->columnCount();
   }
@@ -39,9 +43,13 @@ private:
   using QSortFilterProxyModel::setData;
   bool filterAcceptsRow(int source_row,
                         const QModelIndex &source_parent) const override;
+  bool matchesEol(const QModelIndex &index) const;
+  bool isOnlyEol(const QModelIndex &index) const;
   bool mStaged{
       true}; // indicates, if only staged or only unstages files should be shown
   bool mFilter = true;
+  EolFilter mEolFilter = EolFilter::All;
+  QSet<QString> mEolOnly;
 };
 
 #endif // TREEPROXY_H

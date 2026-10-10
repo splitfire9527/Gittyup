@@ -16,7 +16,9 @@
 #include "git/Repository.h"
 #include "git/RevWalk.h"
 #include "git/Signature.h"
+#include <QContextMenuEvent>
 #include <QDateTime>
+#include <QMenu>
 #include <QMouseEvent>
 #include <QPainter>
 #include <QScrollBar>
@@ -149,6 +151,29 @@ void BlameMargin::mouseReleaseEvent(QMouseEvent *event) {
   }
 
   mIndex = -1;
+}
+
+void BlameMargin::contextMenuEvent(QContextMenuEvent *event) {
+  if (!mBlame.isValid())
+    return;
+  int line = mEditor->firstVisibleLine() + (event->pos().y() / mEditor->textHeight(0));
+  if (line < 0 || line >= mEditor->lineCount())
+    return;
+  int blameIndex = mBlame.index(line + 1);
+  if (blameIndex < 0)
+    return;
+  git::Id id = mBlame.id(blameIndex);
+  QMenu menu(this);
+  menu.addAction(tr("Blame previous revision"), this, [this, id, line] {
+    emit revisionAction("previous", id, line);
+  });
+  menu.addAction(tr("Show changes"), this, [this, id, line] {
+    emit revisionAction("changes", id, line);
+  });
+  menu.addAction(tr("Show history"), this, [this, id, line] {
+    emit revisionAction("history", id, line);
+  });
+  menu.exec(event->globalPos());
 }
 
 void BlameMargin::mouseDoubleClickEvent(QMouseEvent *event) {

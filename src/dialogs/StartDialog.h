@@ -16,7 +16,6 @@
 class Footer;
 class MainWindow;
 class QDialogButtonBox;
-class QListView;
 class QPushButton;
 class QTreeView;
 
@@ -42,7 +41,7 @@ private:
 
   MainWindow *openWindow(const QString &repo);
 
-  QListView *mRepoList;
+  QTreeView *mRepoList;
   Footer *mRepoFooter;
   QAction *mClone;
   QAction *mOpen;

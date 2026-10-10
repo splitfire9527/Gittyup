@@ -245,6 +245,7 @@ void TextEditor::applySettings() {
   setIndent(settings->value(Setting::Id::IndentWidth).toInt());
   setTabWidth(settings->value(Setting::Id::TabWidth).toInt());
   setViewWS(settings->value(Setting::Id::ShowWhitespaceInEditor).toBool());
+  setViewEOL(settings->value(Setting::Id::ShowEolInEditor).toBool());
 
   if (Settings::instance()->isTextEditorWrapLines()) {
     setWrapMode(SC_WRAP_WORD);
@@ -590,6 +591,7 @@ void TextEditor::contextMenuEvent(QContextMenuEvent *event) {
         DiscardSelected, diffLines > 0);
   }
   AddToPopUp("");
+  AddToPopUp("History for Selection", HistoryForSelection, !selectionEmpty());
   AddToPopUp("Select All", SelectAll);
   mPopup.exec(event->globalPos());
 }
@@ -637,6 +639,12 @@ void TextEditor::Command(MenuAction action) {
       int startLine = lineFromPosition(selectionStart());
       int end = lineFromPosition(selectionEnd()) + 1;
       emit discardSelectedSignal(startLine, end);
+      break;
+    }
+    case HistoryForSelection: {
+      int startLine = lineFromPosition(selectionStart());
+      int end = lineFromPosition(selectionEnd()) + 1;
+      emit historyForSelection(startLine, end);
       break;
     }
     case Undo:

@@ -28,6 +28,8 @@
 #include "dialogs/MergeDialog.h"
 #include "dialogs/RemoteDialog.h"
 #include "dialogs/SettingsDialog.h"
+#include "CommandPalette.h"
+#include "OperationLog.h"
 #include "dialogs/StartDialog.h"
 #include "dialogs/UpdateSubmodulesDialog.h"
 #include "editor/TextEditor.h"
@@ -243,6 +245,9 @@ static Hotkey nextTabHotkey = HotkeyManager::registerHotkey(
 static Hotkey chooserHotkey = HotkeyManager::registerHotkey(
     "Ctrl+Shift+O", "window/chooser", "Window/Show Repository Chooser");
 
+static Hotkey paletteHotkey = HotkeyManager::registerHotkey(
+    "Ctrl+Shift+P", "window/palette", "Window/Command Palette");
+
 static Hotkey preferencesHotkey = HotkeyManager::registerHotkey(
     nullptr, "tools/preferences", "Tools/Options");
 
@@ -354,11 +359,35 @@ MenuBar::MenuBar(QWidget *parent) : QMenuBar(parent) {
   connect(mUndo, &QAction::triggered, [] {
     QWidget *widget = QApplication::focusWidget();
     if (TextEditor *editor = qobject_cast<TextEditor *>(widget)) {
-      editor->undo();
+      if (editor->canUndo()) {
+        editor->undo();
+        return;
+      }
     } else if (QLineEdit *editor = qobject_cast<QLineEdit *>(widget)) {
-      editor->undo();
+      if (editor->isUndoAvailable()) {
+        editor->undo();
+        return;
+      }
     } else if (QTextEdit *editor = qobject_cast<QTextEdit *>(widget)) {
-      editor->undo();
+      if (editor->document()->isUndoAvailable()) {
+        editor->undo();
+        return;
+      }
+    }
+
+    MainWindow *window = qobject_cast<MainWindow *>(QApplication::activeWindow());
+    if (!window || !window->currentView())
+      return;
+    git::Repository repo = window->currentView()->repo();
+    QString description = OperationLog::instance()->undoDescription(repo);
+    if (description.isEmpty())
+      return;
+    auto answer = QMessageBox::question(
+        window, QObject::tr("Undo"),
+        QObject::tr("Undo %1?").arg(description));
+    if (answer == QMessageBox::Yes) {
+      OperationLog::instance()->undo(repo);
+      window->currentView()->refresh();
     }
   });
 
@@ -367,11 +396,35 @@ MenuBar::MenuBar(QWidget *parent) : QMenuBar(parent) {
   connect(mRedo, &QAction::triggered, [] {
     QWidget *widget = QApplication::focusWidget();
     if (TextEditor *editor = qobject_cast<TextEditor *>(widget)) {
-      editor->redo();
+      if (editor->canRedo()) {
+        editor->redo();
+        return;
+      }
     } else if (QTextEdit *editor = qobject_cast<QTextEdit *>(widget)) {
-      editor->redo();
+      if (editor->document()->isRedoAvailable()) {
+        editor->redo();
+        return;
+      }
     } else if (QLineEdit *editor = qobject_cast<QLineEdit *>(widget)) {
-      editor->redo();
+      if (editor->isRedoAvailable()) {
+        editor->redo();
+        return;
+      }
+    }
+
+    MainWindow *window = qobject_cast<MainWindow *>(QApplication::activeWindow());
+    if (!window || !window->currentView())
+      return;
+    git::Repository repo = window->currentView()->repo();
+    QString description = OperationLog::instance()->redoDescription(repo);
+    if (description.isEmpty())
+      return;
+    auto answer = QMessageBox::question(
+        window, QObject::tr("Redo"),
+        QObject::tr("Redo %1?").arg(description));
+    if (answer == QMessageBox::Yes) {
+      OperationLog::instance()->redo(repo);
+      window->currentView()->refresh();
     }
   });
 
@@ -819,6 +872,10 @@ MenuBar::MenuBar(QWidget *parent) : QMenuBar(parent) {
   chooserHotkey.use(chooser);
   connect(chooser, &QAction::triggered, &StartDialog::openSharedInstance);
 
+  QAction *palette = windowMenu->addAction(tr("Command Palette..."));
+  paletteHotkey.use(palette);
+  connect(palette, &QAction::triggered, [] { CommandPalette::open(); });
+
   // Tools
   QMenu *tools = addMenu(tr("Tools"));
   QAction *preferences = tools->addAction(tr("Options..."));
@@ -943,6 +1000,8 @@ void MenuBar::updateSave() {
 }
 
 void MenuBar::updateUndoRedo() {
+  mUndo->setText(tr("Undo"));
+  mRedo->setText(tr("Redo"));
   mUndo->setEnabled(false);
   mRedo->setEnabled(false);
 
@@ -950,12 +1009,31 @@ void MenuBar::updateUndoRedo() {
   if (TextEditor *editor = qobject_cast<TextEditor *>(widget)) {
     mUndo->setEnabled(editor->canUndo());
     mRedo->setEnabled(editor->canRedo());
+    if (editor->canUndo() || editor->canRedo())
+      return;
   } else if (QTextEdit *editor = qobject_cast<QTextEdit *>(widget)) {
     mUndo->setEnabled(editor->document()->isUndoAvailable());
     mRedo->setEnabled(editor->document()->isRedoAvailable());
+    if (mUndo->isEnabled() || mRedo->isEnabled())
+      return;
   } else if (QLineEdit *editor = qobject_cast<QLineEdit *>(widget)) {
     mUndo->setEnabled(editor->isUndoAvailable());
     mRedo->setEnabled(editor->isRedoAvailable());
+    if (mUndo->isEnabled() || mRedo->isEnabled())
+      return;
+  }
+
+  MainWindow *window = qobject_cast<MainWindow *>(QApplication::activeWindow());
+  if (!window || !window->currentView())
+    return;
+  git::Repository repo = window->currentView()->repo();
+  if (OperationLog::instance()->canUndo(repo)) {
+    mUndo->setEnabled(true);
+    mUndo->setText(tr("Undo %1").arg(OperationLog::instance()->undoDescription(repo)));
+  }
+  if (OperationLog::instance()->canRedo(repo)) {
+    mRedo->setEnabled(true);
+    mRedo->setText(tr("Redo %1").arg(OperationLog::instance()->redoDescription(repo)));
   }
 }
 

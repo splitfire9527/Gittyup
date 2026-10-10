@@ -42,6 +42,8 @@ private:
   void handleSslErrors(QNetworkReply *reply, const QList<QSslError> &errors);
 
   QString mPathspec = QString();
+  QString mViewAction;
+  QString mViewPath;
   QScopedPointer<Theme> mTheme;
   QScopedPointer<QTemporaryDir> mTempSettingsDir;
   QStringList mPositionalArguments;
@@ -59,6 +61,7 @@ public:
 public slots:
   Q_SCRIPTABLE void openRepository(const QString &repo);
   Q_SCRIPTABLE void openAndFocusRepository(const QString &repo);
+  Q_SCRIPTABLE void openView(const QString &action, const QString &path);
   Q_SCRIPTABLE void setFocus();
 };
 #endif

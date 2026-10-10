@@ -8,6 +8,7 @@
 //
 
 #include "FileContextMenu.h"
+#include "FileHistoryWindow.h"
 #include "RepoView.h"
 #include "IgnoreDialog.h"
 #include "conf/Settings.h"
@@ -220,6 +221,9 @@ FileContextMenu::FileContextMenu(RepoView *view, const QStringList &files,
 
     // History
     addAction(tr("Filter History"), [view, file] { view->setPathspec(file); });
+    addAction(tr("History..."), [view, file] {
+      FileHistoryWindow::show(view->repo(), file);
+    });
 
     // Navigate
     QMenu *navigate = addMenu(tr("Navigate to"));

@@ -35,9 +35,11 @@ public:
 
 signals:
   void linkActivated(const QString &link);
+  void revisionAction(const QString &action, const git::Id &id, int line);
 
 protected:
   bool event(QEvent *event) override;
+  void contextMenuEvent(QContextMenuEvent *event) override;
   void mousePressEvent(QMouseEvent *event) override;
   void mouseReleaseEvent(QMouseEvent *event) override;
   void mouseDoubleClickEvent(QMouseEvent *event) override;

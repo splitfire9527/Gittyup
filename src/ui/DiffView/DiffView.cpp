@@ -18,7 +18,9 @@
 #include "ui/HotkeyManager.h"
 #include "ui/ProgressIndicator.h"
 #include "git/Tree.h"
+#include <QLabel>
 #include <QPainter>
+#include <QResizeEvent>
 #include <QScrollBar>
 #include <QPushButton>
 #include <QMimeData>
@@ -103,6 +105,10 @@ DiffView::DiffView(const git::Repository &repo, QWidget *parent)
   moveHalfPageUpHotKey.use(shortcut);
   connect(shortcut, &QShortcut::activated, [this] { moveHalfPageUp(); });
 
+  mStickyHeader = new QLabel(this);
+  mStickyHeader->setObjectName("StickyFileHeader");
+  mStickyHeader->hide();
+
   connect(&mTimer, &QTimer::timeout, this, [this] {
     ++mProgress;
     if (mLoadingFadein < 1.0f)
@@ -112,6 +118,33 @@ DiffView::DiffView(const git::Repository &repo, QWidget *parent)
 }
 
 DiffView::~DiffView() {}
+
+void DiffView::resizeEvent(QResizeEvent *event) {
+  QScrollArea::resizeEvent(event);
+  updateStickyHeader();
+}
+
+void DiffView::updateStickyHeader() {
+  if (!mStickyHeader)
+    return;
+  QString name;
+  for (FileWidget *file : mFiles) {
+    if (!file->header())
+      continue;
+    QPoint top = file->header()->mapTo(viewport(), QPoint(0, 0));
+    if (top.y() <= 0)
+      name = file->name();
+  }
+  if (name.isEmpty()) {
+    mStickyHeader->hide();
+    return;
+  }
+  mStickyHeader->setText(name);
+  mStickyHeader->setGeometry(0, 0, viewport()->width(),
+                             mStickyHeader->sizeHint().height());
+  mStickyHeader->show();
+  mStickyHeader->raise();
+}
 
 void DiffView::setLoading(bool loading) {
   if (loading) {
@@ -173,6 +206,7 @@ void DiffView::setDiff(const git::Diff &diff) {
   layout->setSizeConstraint(QLayout::SetMinAndMaxSize);
 
   mFileWidgetLayout = new QVBoxLayout();
+  mFileWidgetLayout->setSpacing(8);
 
   if (!diff.isValid()) {
     if (repo.isHeadUnborn()) {
@@ -231,6 +265,7 @@ void DiffView::setDiff(const git::Diff &diff) {
       connect(scrollBar, &QScrollBar::valueChanged, [this](int value) {
         if (value > verticalScrollBar()->maximum() / 2 && canFetchMore())
           fetchMore();
+        updateStickyHeader();
       }));
 
   mConnections.append(connect(

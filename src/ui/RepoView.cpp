@@ -22,6 +22,8 @@
 #include "RemoteCallbacks.h"
 #include "SearchField.h"
 #include "DoubleTreeWidget.h"
+#include "FileHistoryWindow.h"
+#include "OperationLog.h"
 #include "ToolBar.h"
 #include "Debug.h"
 #include "app/Application.h"
@@ -38,6 +40,7 @@
 #include "dialogs/TagDialog.h"
 #include "editor/TextEditor.h"
 #include "git/Config.h"
+#include <QFileInfo>
 #include "git/Index.h"
 #include "git/Rebase.h"
 #include "git/RevWalk.h"
@@ -1290,6 +1293,7 @@ void RepoView::merge(MergeFlags flags, const git::AnnotatedCommit &upstream,
   Q_ASSERT(head.isValid());
 
   // Try to merge.
+  OperationLog::instance()->capture(mRepo, tr("Merge"));
   if (!mRepo.merge(upstream)) {
     LogEntry *err = error(parent, tr("merge"), head.name());
 
@@ -1433,6 +1437,7 @@ void RepoView::rebase(const git::AnnotatedCommit &upstream, LogEntry *parent) {
 
   mRebase = parent;
 
+  OperationLog::instance()->capture(mRepo, tr("Rebase"));
   mRepo.rebase(upstream, mDetails->overrideUser(), mDetails->overrideEmail());
 }
 
@@ -1542,6 +1547,7 @@ void RepoView::revert(const git::Commit &commit) {
   LogEntry *parent = addLogEntry(link, tr("Revert"));
 
   // FIXME: Report which files conflicted?
+  OperationLog::instance()->capture(mRepo, tr("Revert"));
   if (!commit.revert()) {
     error(parent, tr("revert"), link);
     return;
@@ -1592,6 +1598,7 @@ void RepoView::cherryPick(const git::Commit &commit) {
   LogEntry *parent = addLogEntry(text, tr("Cherry-pick"));
 
   // FIXME: Report which files conflicted?
+  OperationLog::instance()->capture(mRepo, tr("Cherry-pick"));
   if (!mRepo.cherryPick(commit)) {
     error(parent, tr("cherry-pick"), link);
     return;
@@ -1862,6 +1869,7 @@ bool RepoView::commit(const git::Signature &author,
   QString text = tr("<i>no commit</i>");
   LogEntry *entry = addLogEntry(text, tr("Commit"), parent);
 
+  OperationLog::instance()->capture(mRepo, tr("Commit"));
   git::Commit commit = mRepo.commit(author, commiter, message, upstream);
 
   if (!commit.isValid()) {
@@ -1928,6 +1936,7 @@ void RepoView::checkout(const git::Commit &commit, const QStringList &paths) {
 
   CheckoutCallbacks callbacks(entry, GIT_CHECKOUT_NOTIFY_ALL);
   int strategy = GIT_CHECKOUT_SAFE | GIT_CHECKOUT_DONT_UPDATE_INDEX;
+  OperationLog::instance()->captureFiles(mRepo, paths, tr("Checkout"));
   mRepo.checkout(commit, &callbacks, paths, strategy);
   mRefs->select(mRepo.head());
 }
@@ -2001,6 +2010,7 @@ void RepoView::checkout(const git::Commit &commit, const git::Reference &ref,
 
   LogEntry *entry = addLogEntry(name, tr("Checkout"));
   CheckoutCallbacks callbacks(entry, GIT_CHECKOUT_NOTIFY_DIRTY);
+  OperationLog::instance()->capture(mRepo, tr("Checkout"));
   if (!commit.isValid() || !mRepo.checkout(commit, &callbacks) ||
       (detach && !mRepo.setHeadDetached(commit)) ||
       (!detach && !mRepo.setHead(ref))) {
@@ -2063,6 +2073,9 @@ git::Branch RepoView::createBranch(const QString &name,
 void RepoView::promptToDeleteBranch(const git::Reference &ref) {
   DeleteBranchDialog *dialog = new DeleteBranchDialog(ref, this);
   dialog->setAttribute(Qt::WA_DeleteOnClose);
+  connect(dialog, &DeleteBranchDialog::aboutToRemove, this, [this] {
+    OperationLog::instance()->capture(mRepo, tr("Delete branch"));
+  });
   dialog->open();
 }
 
@@ -2099,6 +2112,7 @@ void RepoView::stash(const QString &message) {
   QString text = tr("<i>working directory</i>");
   LogEntry *entry = addLogEntry(text, tr("Stash"));
 
+  OperationLog::instance()->capture(mRepo, tr("Stash"));
   git::Commit commit = mRepo.stash(message);
   if (!commit.isValid()) {
     error(entry, tr("stash"), text);
@@ -2129,6 +2143,7 @@ void RepoView::dropStash(int index) {
 
   git::Commit commit = stashes.at(index);
   LogEntry *entry = addLogEntry(msg(commit), tr("Drop Stash"));
+  OperationLog::instance()->capture(mRepo, tr("Drop stash"));
   if (!mRepo.dropStash(index))
     error(entry, tr("drop stash"), commit.link());
 
@@ -2290,6 +2305,7 @@ void RepoView::reset(const git::Commit &commit, git_reset_t type,
   QString text = tr("%1 to %2").arg(head.name(), commit.link());
   LogEntry *entry = addLogEntry(text, title);
 
+  OperationLog::instance()->capture(mRepo, title);
   if (!commit.reset(type, QStringList(), false))
     error(entry, commitToAmend ? tr("amend") : tr("reset"), head.name());
 
@@ -2830,6 +2846,27 @@ void RepoView::refresh(bool restoreSelection) {
 
 void RepoView::setPathspec(const QString &path) {
   mPathspec->setPathspec(path);
+}
+
+void RepoView::showPathAction(const QString &action, const QString &path) {
+  QString relative = path;
+  QFileInfo info(path);
+  if (info.isAbsolute() && mRepo.isValid())
+    relative = mRepo.workdir().relativeFilePath(info.absoluteFilePath());
+
+  if (action == "history") {
+    QString historyPath = (relative.isEmpty() || relative == ".") ? QString(".") : relative;
+    FileHistoryWindow::show(mRepo, historyPath);
+    return;
+  }
+
+  if (!relative.isEmpty() && relative != ".")
+    setPathspec(relative);
+
+  if (action == "blame") {
+    if (DoubleTreeWidget *tree = findChild<DoubleTreeWidget *>())
+      tree->showBlame(relative == "." ? QString() : relative);
+  }
 }
 
 git::Commit RepoView::nextRevision(const QString &path) const {

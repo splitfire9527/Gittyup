@@ -23,6 +23,7 @@
 #include "git2/types.h"
 #include <QCoreApplication>
 #include <QDir>
+#include <QHash>
 #include <QObject>
 #include <QSet>
 #include <QSharedPointer>
@@ -114,7 +115,14 @@ public:
                        bool ignoreWhitespace = false) const;
   Diff diffIndexToWorkdir(const Index &index = Index(),
                           Diff::Callbacks *callbacks = nullptr,
-                          bool ignoreWhitespace = false) const;
+                          bool ignoreWhitespace = false,
+                          unsigned extraFlags = 0) const;
+  Diff diffTrees(const Tree &oldTree, const Tree &newTree,
+                 const QString &path = QString()) const;
+
+  // Tracked files whose workdir diff disappears when end-of-line changes are
+  // ignored.
+  QSet<QString> eolOnlyPaths(const Index &index = Index()) const;
 
   // refs
   QList<Reference> refs() const;
@@ -232,11 +240,14 @@ public:
   // encoding
   QStringConverter::Encoding encoding() const;
   QString decode(const QByteArray &text) const;
+  // Per-file decoding: working-tree-encoding, BOM, strict UTF-8, then fallback.
+  QString decode(const QByteArray &text, const QString &path) const;
+  QByteArray encode(const QString &text, const QString &path) const;
 
   // clean
   bool clean(const QString &name);
 
-  QString attributeValue(const QString &attribute, const QString &path);
+  QString attributeValue(const QString &attribute, const QString &path) const;
 
   // LFS
   bool lfsIsInitialized();
@@ -282,6 +293,7 @@ private:
     bool lfsLocksCached = false;
 
     QSet<Id> starredCommits;
+    mutable QHash<QString, QByteArray> encodingNames;
   };
 
   Repository(git_repository *repo);

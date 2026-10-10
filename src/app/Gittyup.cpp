@@ -8,6 +8,8 @@
 //
 
 #include "Application.h"
+#include "conf/Settings.h"
+#include "dialogs/StartDialog.h"
 #include "git/Config.h"
 #include "ui/MainWindow.h"
 #include <QMessageBox>
@@ -28,8 +30,16 @@ int main(int argc, char *argv[]) {
 
   // Restore windows before checking for updates so that
   // the update dialog pops up on top of the other windows.
-  if (!app.restoreWindows())
-    MainWindow::open();
+  if (!app.restoreWindows()) {
+    bool showGroups =
+        Settings::instance()
+            ->value(Setting::Id::ShowGroupsOnStart, true)
+            .toBool();
+    if (showGroups)
+      StartDialog::openSharedInstance();
+    else
+      MainWindow::open();
+  }
 
   // Check for updates.
   app.autoUpdate();

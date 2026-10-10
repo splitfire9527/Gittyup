@@ -93,6 +93,7 @@ public:
     StageSelected,
     UnstageSelected,
     DiscardSelected,
+    HistoryForSelection,
     SelectAll,
   };
   Q_ENUM(MenuAction);
@@ -174,6 +175,7 @@ signals:
    * \param end End line of selection + 1
    */
   void discardSelectedSignal(int startPos, int end);
+  void historyForSelection(int startLine, int endLine);
 
 protected:
   QSize viewportSizeHint() const override;

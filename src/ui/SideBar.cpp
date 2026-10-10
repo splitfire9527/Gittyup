@@ -17,11 +17,13 @@
 #include "conf/Settings.h"
 #include "conf/RecentRepositories.h"
 #include "conf/RecentRepository.h"
+#include "conf/RepositoryGroups.h"
 #include "dialogs/AccountDialog.h"
 #include "dialogs/CloneDialog.h"
 #include "host/Accounts.h"
 #include <QAbstractItemModel>
 #include <QFileDialog>
+#include <QFileInfo>
 #include <QMenu>
 #include <QMessageBox>
 #include <QPushButton>
@@ -94,7 +96,7 @@ class RepoModel : public QAbstractItemModel {
   Q_OBJECT
 
 public:
-  enum RootRow { Repo, Recent, Remote };
+  enum RootRow { Repo, Recent, Remote, Groups };
 
   RepoModel(TabWidget *tabs, QObject *parent = nullptr)
       : QAbstractItemModel(parent), mTabs(tabs), mCloudIcon(":/cloud.png"),
@@ -154,6 +156,12 @@ public:
                   index(repoIndex, 0, index(accountIndex, 0, index(Remote, 0)));
               emit dataChanged(idx, idx, {Qt::DisplayRole});
             });
+
+    RepositoryGroups *groups = RepositoryGroups::instance();
+    connect(groups, &RepositoryGroups::groupsChanged, this, [this] {
+      beginResetModel();
+      endResetModel();
+    });
   }
 
   QModelIndex index(int row, int column,
@@ -162,6 +170,13 @@ public:
       return createIndex(row, column);
 
     QObject *ptr = static_cast<QObject *>(parent.internalPointer());
+    if (qobject_cast<RepositoryGroups *>(ptr))
+      return QModelIndex();
+    if (RepositoryGroup *group = qobject_cast<RepositoryGroup *>(ptr)) {
+      if (row < 0 || row >= group->count())
+        return QModelIndex();
+      return createIndex(row, column, group->repository(row));
+    }
     if (Account *account = qobject_cast<Account *>(ptr)) {
       // repository
       if (account->repositoryCount())
@@ -193,6 +208,15 @@ public:
         if (!accounts->count())
           return createIndex(row, column, accounts);
         return createIndex(row, column, accounts->account(row));
+
+      case Groups: {
+        RepositoryGroups *groups = RepositoryGroups::instance();
+        if (!groups->count())
+          return createIndex(row, column, groups);
+        if (row < 0 || row >= groups->count())
+          return QModelIndex();
+        return createIndex(row, column, groups->at(row));
+      }
     }
 
     return QModelIndex();
@@ -213,6 +237,15 @@ public:
     if (qobject_cast<Account *>(ptr) || qobject_cast<Accounts *>(ptr))
       return createIndex(Remote, 0);
 
+    if (qobject_cast<RepositoryGroup *>(ptr) ||
+        qobject_cast<RepositoryGroups *>(ptr))
+      return createIndex(Groups, 0);
+
+    if (GroupRepository *grouped = qobject_cast<GroupRepository *>(ptr)) {
+      RepositoryGroups *groups = RepositoryGroups::instance();
+      return createIndex(groups->indexOf(grouped->group()), 0, grouped->group());
+    }
+
     Account *account = nullptr;
     if (Repository *repo = qobject_cast<Repository *>(ptr)) {
       account = repo->account();
@@ -230,9 +263,13 @@ public:
 
   int rowCount(const QModelIndex &parent = QModelIndex()) const override {
     if (!parent.isValid())
-      return 3;
+      return 4;
 
     QObject *ptr = static_cast<QObject *>(parent.internalPointer());
+    if (RepositoryGroup *group = qobject_cast<RepositoryGroup *>(ptr))
+      return group->count();
+    if (qobject_cast<RepositoryGroups *>(ptr))
+      return 0;
     if (Account *account = qobject_cast<Account *>(ptr)) {
       int count = account->repositoryCount();
       if (count > 0)
@@ -258,6 +295,11 @@ public:
       case Remote: {
         Accounts *accounts = Accounts::instance();
         return accounts->count() ? accounts->count() : Account::NUM_KINDS;
+      }
+
+      case Groups: {
+        RepositoryGroups *groups = RepositoryGroups::instance();
+        return groups->count() ? groups->count() : 1;
       }
 
       default:
@@ -309,6 +351,48 @@ public:
       }
     }
 
+    if (GroupRepository *grouped = qobject_cast<GroupRepository *>(ptr)) {
+      switch (role) {
+        case Qt::DisplayRole:
+          return mShowFullPath ? grouped->path()
+                               : QFileInfo(grouped->path()).fileName();
+        case PathRole:
+          return grouped->path();
+        case Qt::ToolTipRole:
+          return grouped->path();
+        default:
+          return QVariant();
+      }
+    }
+
+    if (RepositoryGroup *group = qobject_cast<RepositoryGroup *>(ptr)) {
+      switch (role) {
+        case Qt::DisplayRole:
+          return group->name();
+        case Qt::FontRole: {
+          QFont font;
+          font.setBold(true);
+          return font;
+        }
+        default:
+          return QVariant();
+      }
+    }
+
+    if (qobject_cast<RepositoryGroups *>(ptr)) {
+      switch (role) {
+        case Qt::DisplayRole:
+          return tr("none");
+        case Qt::FontRole: {
+          QFont font;
+          font.setItalic(true);
+          return font;
+        }
+        default:
+          return QVariant();
+      }
+    }
+
     if (AccountProgress *progress = qobject_cast<AccountProgress *>(ptr)) {
       switch (role) {
         case Qt::DisplayRole:
@@ -341,6 +425,8 @@ public:
               return tr("recent");
             case Remote:
               return tr("remote");
+            case Groups:
+              return tr("groups");
             default:
               return QVariant();
           }
@@ -583,6 +669,10 @@ void restoreExpansionState(QTreeView *view) {
   for (int i = 0; i < model->rowCount(); ++i)
     view->expand(model->index(i, 0));
 
+  QModelIndex groups = model->index(RepoModel::Groups, 0);
+  for (int i = 0; i < model->rowCount(groups); ++i)
+    view->expand(model->index(i, 0, groups));
+
   QSettings settings;
   settings.beginGroup(kRemoteExpandedGroup);
 
@@ -703,6 +793,26 @@ SideBar::SideBar(TabWidget *tabs, MainWindow *mainWindow, QWidget *parent)
             QModelIndex index = view->indexAt(point);
             if (RepoView *view = index.data(TabRole).value<RepoView *>()) {
               menu.addAction(tr("Close"), view, &RepoView::close);
+            } else if (auto *group = qobject_cast<RepositoryGroup *>(
+                           static_cast<QObject *>(index.internalPointer()))) {
+              menu.addAction(tr("Open All"), [group] {
+                QStringList paths = group->paths();
+                if (paths.isEmpty())
+                  return;
+                MainWindow *window = MainWindow::open(paths.takeFirst());
+                if (!window)
+                  return;
+                for (const QString &path : paths)
+                  window->addTab(path);
+              });
+              menu.addAction(tr("Remove Group"), [group] {
+                RepositoryGroups::instance()->remove(group);
+              });
+            } else if (auto *grouped = qobject_cast<GroupRepository *>(
+                           static_cast<QObject *>(index.internalPointer()))) {
+              menu.addAction(tr("Remove from Group"), [grouped] {
+                grouped->group()->removePath(grouped->path());
+              });
             } else if (Account *account =
                            index.data(AccountRole).value<Account *>()) {
               menu.addAction(tr("Remove"), [this, account] {

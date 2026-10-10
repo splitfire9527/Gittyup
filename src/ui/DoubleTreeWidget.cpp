@@ -12,6 +12,8 @@
 #include "BlameEditor.h"
 #include "DiffTreeModel.h"
 #include "FileContextMenu.h"
+#include "FileHistoryWindow.h"
+#include "OperationLog.h"
 #include "StatePushButton.h"
 #include "TreeProxy.h"
 #include "TreeView.h"
@@ -23,8 +25,12 @@
 
 #include <QVBoxLayout>
 #include <QHBoxLayout>
+#include <QComboBox>
+#include <QFile>
+#include <QFileInfo>
 #include <QLabel>
 #include <QPushButton>
+#include <QSaveFile>
 #include <QSettings>
 #include <QStackedWidget>
 #include <QButtonGroup>
@@ -201,7 +207,35 @@ DoubleTreeWidget::DoubleTreeWidget(const git::Repository &repo, QWidget *parent)
       new StatePushButton(kCollapseAll, kExpandAll, this);
   hBoxLayout->addWidget(collapseButtonUnstagedFiles);
 
+  mUnstagedBatch = new QWidget(this);
+  QHBoxLayout *batchLayout = new QHBoxLayout(mUnstagedBatch);
+  batchLayout->setContentsMargins(0, 0, 0, 0);
+  mEolFilter = new QComboBox(mUnstagedBatch);
+  mEolFilter->addItem(tr("All"));
+  mEolFilter->addItem(tr("EOL only"));
+  mEolFilter->addItem(tr("Exclude EOL"));
+  mEolFilter->setToolTip(tr("Filter files whose only change is the line ending"));
+  batchLayout->addWidget(mEolFilter);
+  auto addBatch = [this, batchLayout](const QString &text, const QString &tip,
+                                      void (DoubleTreeWidget::*slot)()) {
+    QPushButton *button = new QPushButton(text, mUnstagedBatch);
+    button->setToolTip(tip);
+    connect(button, &QPushButton::clicked, this, slot);
+    batchLayout->addWidget(button);
+  };
+  addBatch(tr("Select"), tr("Select every visible unstaged file"),
+           &DoubleTreeWidget::selectAllUnstaged);
+  addBatch(tr("Stage"), tr("Stage every visible unstaged file"),
+           &DoubleTreeWidget::stageVisibleUnstaged);
+  addBatch(tr("Discard"), tr("Discard every visible unstaged file"),
+           &DoubleTreeWidget::discardVisibleUnstaged);
+  addBatch(tr("Normalize"), tr("Rewrite visible files to the configured line ending"),
+           &DoubleTreeWidget::normalizeVisibleEol);
+  connect(mEolFilter, QOverload<int>::of(&QComboBox::currentIndexChanged), this,
+          &DoubleTreeWidget::applyEolFilter);
+
   vBoxLayout->addLayout(hBoxLayout);
+  vBoxLayout->addWidget(mUnstagedBatch);
   vBoxLayout->addWidget(unstagedFiles);
   QWidget *unstagedWidget = new QWidget();
   unstagedWidget->setLayout(vBoxLayout);
@@ -334,7 +368,20 @@ void DoubleTreeWidget::showFileContextMenu(const QPoint &pos, RepoView *view,
   if (files.isEmpty())
     return;
 
+  QString directory;
+  if (indexes.size() == 1) {
+    auto *node = indexes.first().data(Qt::UserRole).value<Node *>();
+    if (node && node->hasChildren())
+      directory = node->path(true);
+  }
+
   auto menu = new FileContextMenu(view, files, git::Index(), tree);
+  if (!directory.isEmpty()) {
+    menu->addSeparator();
+    menu->addAction(tr("History..."), [view, directory] {
+      FileHistoryWindow::show(view->repo(), directory);
+    });
+  }
   menu->setAttribute(Qt::WA_DeleteOnClose);
   menu->popup(tree->mapToGlobal(pos));
 }
@@ -458,6 +505,13 @@ void DoubleTreeWidget::setDiff(const git::Diff &diff, const QString &file,
   unstagedFiles->updateView(); // Must be before expandAll/collapseAll is done,
                                // otherwise the collapse counter is wrong
   stagedFiles->updateView();
+
+  const bool statusDiff = diff.isValid() && diff.isStatusDiff();
+  if (mUnstagedBatch)
+    mUnstagedBatch->setVisible(statusDiff);
+  mEolOnlyValid = false;
+  if (mEolFilter)
+    applyEolFilter(statusDiff ? mEolFilter->currentIndex() : 0);
 
   // If statusDiff, there exist no staged/unstaged, but only
   // the commited files must be shown
@@ -648,4 +702,128 @@ void DoubleTreeWidget::toggleCollapseUnstagedFiles() {
     unstagedFiles->expandAll();
   else
     unstagedFiles->collapseAll();
+}
+
+void DoubleTreeWidget::showBlame(const QString &path) {
+  mFileView->setCurrentIndex(Blame);
+  stagedFiles->setSelectionMode(QAbstractItemView::SingleSelection);
+  unstagedFiles->setSelectionMode(QAbstractItemView::SingleSelection);
+  if (path.isEmpty())
+    return;
+
+  QModelIndex index = mDiffTreeModel->index(path);
+  if (!index.isValid())
+    return;
+  TreeProxy *proxy = static_cast<TreeProxy *>(unstagedFiles->model());
+  QModelIndex mapped = proxy->mapFromSource(index);
+  if (!mapped.isValid()) {
+    proxy = static_cast<TreeProxy *>(stagedFiles->model());
+    mapped = proxy->mapFromSource(index);
+    if (mapped.isValid())
+      stagedFiles->selectionModel()->setCurrentIndex(
+          mapped, QItemSelectionModel::ClearAndSelect | QItemSelectionModel::Rows);
+    return;
+  }
+  unstagedFiles->selectionModel()->setCurrentIndex(
+      mapped, QItemSelectionModel::ClearAndSelect | QItemSelectionModel::Rows);
+}
+
+void DoubleTreeWidget::applyEolFilter(int index) {
+  TreeProxy::EolFilter filter = TreeProxy::EolFilter::All;
+  if (index == 1)
+    filter = TreeProxy::EolFilter::Only;
+  else if (index == 2)
+    filter = TreeProxy::EolFilter::Exclude;
+
+  if (filter != TreeProxy::EolFilter::All && !mEolOnlyValid && mDiff.isValid()) {
+    mEolOnly = RepoView::parentView(this)->repo().eolOnlyPaths(mDiff.index());
+    mEolOnlyValid = true;
+  }
+
+  auto *proxy = static_cast<TreeProxy *>(unstagedFiles->model());
+  proxy->setEolFilter(filter, mEolOnly);
+}
+
+void DoubleTreeWidget::collectVisibleFiles(const QModelIndex &parent,
+                                           QStringList &files,
+                                           QModelIndexList &leaves) const {
+  QAbstractItemModel *model = unstagedFiles->model();
+  int rows = model->rowCount(parent);
+  for (int i = 0; i < rows; ++i) {
+    QModelIndex index = model->index(i, 0, parent);
+    if (model->rowCount(index) == 0) {
+      files.append(index.data(Qt::EditRole).toString());
+      leaves.append(index);
+    } else {
+      collectVisibleFiles(index, files, leaves);
+    }
+  }
+}
+
+void DoubleTreeWidget::selectAllUnstaged() {
+  unstagedFiles->expandAll();
+  unstagedFiles->selectAll();
+}
+
+void DoubleTreeWidget::stageVisibleUnstaged() {
+  QStringList files;
+  QModelIndexList leaves;
+  collectVisibleFiles(QModelIndex(), files, leaves);
+  TreeProxy *proxy = static_cast<TreeProxy *>(unstagedFiles->model());
+  for (const QModelIndex &index : leaves)
+    proxy->setData(index, QVariant(int(Qt::Checked)), Qt::CheckStateRole, false);
+}
+
+void DoubleTreeWidget::discardVisibleUnstaged() {
+  QStringList files;
+  QModelIndexList leaves;
+  collectVisibleFiles(QModelIndex(), files, leaves);
+  if (files.isEmpty())
+    return;
+
+  git::Repository repo = RepoView::parentView(this)->repo();
+  OperationLog::instance()->captureFiles(repo, files, tr("Discard"));
+  TreeProxy *proxy = static_cast<TreeProxy *>(unstagedFiles->model());
+  for (const QModelIndex &index : leaves) {
+    QModelIndex source = proxy->mapToSource(index);
+    if (source.isValid())
+      mDiffTreeModel->discard(source, false);
+  }
+}
+
+void DoubleTreeWidget::normalizeVisibleEol() {
+  QStringList files;
+  QModelIndexList leaves;
+  collectVisibleFiles(QModelIndex(), files, leaves);
+  if (files.isEmpty())
+    return;
+
+  git::Repository repo = RepoView::parentView(this)->repo();
+  OperationLog::instance()->captureFiles(repo, files, tr("Normalize line endings"));
+  for (const QString &path : files) {
+    QString absolute = repo.workdir().filePath(path);
+    if (!QFileInfo(absolute).isFile())
+      continue;
+
+    QFile input(absolute);
+    if (!input.open(QIODevice::ReadOnly))
+      continue;
+    QString text = repo.decode(input.readAll(), path);
+    input.close();
+
+    text.replace("\r\n", "\n");
+    text.replace('\r', '\n');
+    QString eol = repo.attributeValue("eol", path);
+    bool crlf = eol == "crlf" ||
+                (eol.isEmpty() &&
+                 repo.gitConfig().value<QString>("core.autocrlf") == "true");
+    if (crlf)
+      text.replace("\n", "\r\n");
+
+    QSaveFile output(absolute);
+    if (!output.open(QIODevice::WriteOnly))
+      continue;
+    output.write(repo.encode(text, path));
+    output.commit();
+  }
 }

@@ -35,6 +35,7 @@ _FileWidget::Header::Header(const git::Diff &diff, const git::Patch &patch,
                             bool binary, bool lfs, bool submodule,
                             QWidget *parent)
     : QFrame(parent), mDiff(diff), mPatch(patch), mSubmodule(submodule) {
+  setObjectName("FileHeader");
   setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Fixed);
 
   QString name = patch.name();

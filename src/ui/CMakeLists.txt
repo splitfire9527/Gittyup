@@ -21,6 +21,10 @@ add_library(
   EditorWindow.cpp
   ExpandButton.cpp
   FileContextMenu.cpp
+  FileHistoryWindow.cpp
+  CommandPalette.cpp
+  ../dialogs/InteractiveRebaseDialog.cpp
+  OperationLog.cpp
   FindWidget.cpp
   Footer.cpp
   History.cpp
