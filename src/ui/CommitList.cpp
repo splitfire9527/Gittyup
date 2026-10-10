@@ -17,6 +17,7 @@
 #include "ConfigKeys.h"
 #include "app/Application.h"
 #include "conf/Settings.h"
+#include "dialogs/InteractiveRebaseDialog.h"
 #include "dialogs/MergeDialog.h"
 #include "index/Index.h"
 #include "git/Branch.h"
@@ -1763,6 +1764,10 @@ void CommitList::contextMenuEvent(QContextMenuEvent *event) {
 
         dialog->setCommit(commit);
         dialog->open();
+      });
+
+      menu.addAction(tr("Interactive Rebase..."), [view, commit] {
+        InteractiveRebaseDialog::start(view->repo(), commit, view);
       });
 
       menu.addAction(tr("Squash..."), [view, commit] {

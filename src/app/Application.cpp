@@ -136,6 +136,10 @@ Application::Application(int &argc, char **argv, bool haltOnParseError)
   parser.addOption({{"d", "debug-menu"}, "Show debug menu."});
   parser.addOption({{"t", "theme"}, "Choose theme.", "name"});
   parser.addOption({{"f", "filter"}, "Set the pathspec filter.", "pathspec"});
+  parser.addOption({"history", "Open history for a file or directory.", "path"});
+  parser.addOption({"blame", "Open blame for a file.", "path"});
+  parser.addOption({"status", "Open the working tree for a path.", "path"});
+  parser.addOption({"diff", "Open the working tree diff for a path.", "path"});
   parser.addOption({"no-translation", "Disable translation."});
 
   if (haltOnParseError) {
@@ -164,6 +168,14 @@ Application::Application(int &argc, char **argv, bool haltOnParseError)
 
   // Set pathspec filter.
   mPathspec = parser.value("filter");
+  const QStringList viewOptions = {"history", "blame", "status", "diff"};
+  for (const QString &option : viewOptions) {
+    if (parser.isSet(option)) {
+      mViewAction = option;
+      mViewPath = parser.value(option);
+      break;
+    }
+  }
 
 #if defined(Q_OS_WIN)
   // Load default palette.
@@ -305,6 +317,18 @@ bool Application::restoreWindows() {
     QDir::setCurrent(Settings::appDir().path());
 #endif
 
+  if (!mViewAction.isEmpty()) {
+    QString path = mViewPath;
+    if (path.isEmpty() && !mPositionalArguments.isEmpty())
+      path = mPositionalArguments.first();
+    if (MainWindow *win = MainWindow::open(path, true)) {
+      if (RepoView *view = win->currentView())
+        view->showPathAction(mViewAction, path);
+      return true;
+    }
+    return false;
+  }
+
   QDir dir = QDir::current();
   if (!mPositionalArguments.isEmpty()) {
     // Check for command line repo.
@@ -379,6 +403,17 @@ void DBusGittyup::openAndFocusRepository(const QString &repo) {
   openOrSwitch(QDir(repo))->activateWindow();
 }
 
+void DBusGittyup::openView(const QString &action, const QString &path) {
+  git::Repository repo = git::Repository::open(path, true);
+  QString root = repo.isValid() ? repo.workdir().path() : path;
+  MainWindow *window = openOrSwitch(QDir(root));
+  if (!window)
+    return;
+  if (RepoView *view = window->currentView())
+    view->showPathAction(action, path);
+  window->activateWindow();
+}
+
 void DBusGittyup::setFocus() { MainWindow::activeWindow()->activateWindow(); }
 
 #elif defined(Q_OS_WIN)
@@ -426,9 +461,11 @@ protected:
 #endif
 
 bool Application::runSingleInstance() {
-  if (Settings::instance()
-          ->value(Setting::Id::AllowSingleInstanceOnly)
-          .toBool()) {
+  const bool singleInstance = Settings::instance()
+                                  ->value(Setting::Id::AllowSingleInstanceOnly)
+                                  .toBool();
+  const bool forwardView = !mViewAction.isEmpty();
+  if (singleInstance || forwardView) {
 #if defined(Q_OS_LINUX)
     QDBusConnection bus = QDBusConnection::sessionBus();
 
@@ -438,18 +475,30 @@ bool Application::runSingleInstance() {
 
       // Is another instance running on the current DBus session bus?
       if (masterInstance.isValid()) {
-        if (!mPositionalArguments.isEmpty())
-          masterInstance.call(
-              "openAndFocusRepository",
-              QDir(mPositionalArguments.first()).absolutePath());
-        return true;
+        if (forwardView) {
+          QString path = mViewPath.isEmpty() && !mPositionalArguments.isEmpty()
+                             ? mPositionalArguments.first()
+                             : mViewPath;
+          masterInstance.call("openView", mViewAction,
+                              QFileInfo(path).absoluteFilePath());
+          return true;
+        }
+        if (singleInstance) {
+          if (!mPositionalArguments.isEmpty())
+            masterInstance.call(
+                "openAndFocusRepository",
+                QDir(mPositionalArguments.first()).absolutePath());
+          else
+            masterInstance.call("setFocus");
+          return true;
+        }
       }
     }
 
 #elif defined(Q_OS_WIN)
     HWND handle = FindWindowA(nullptr, COPYDATA_WINDOW_TITLE);
     // Is another instance running in the current session?
-    if (handle != nullptr) {
+    if (singleInstance && handle != nullptr) {
       QWindow sender;
 
       COPYDATASTRUCT cds;

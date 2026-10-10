@@ -21,6 +21,7 @@
 #include "log/LogEntry.h"
 #include "tools/ExternalTool.h"
 #include "ui/BlameEditor.h"
+#include "ui/FileManagerIntegration.h"
 #include "ui/EditorWindow.h"
 #include "ui/MainWindow.h"
 #include "ui/MenuBar.h"
@@ -665,6 +666,15 @@ public:
     layout->addRow(QString(), stash);
     layout->addRow(QString(), directories);
     layout->addRow(QString(), largeFiles);
+
+    QCheckBox *groups =
+        new QCheckBox(tr("Show repository groups on startup"), this);
+    groups->setChecked(
+        settings->value(Setting::Id::ShowGroupsOnStart, true).toBool());
+    connect(groups, &QCheckBox::toggled, [](bool checked) {
+      Settings::instance()->setValue(Setting::Id::ShowGroupsOnStart, checked);
+    });
+    layout->addRow(tr("Groups:"), groups);
   }
 };
 
@@ -699,6 +709,31 @@ public:
     connect(showWhitespace, &QCheckBox::toggled, [](bool checked) {
       Settings::instance()->setValue(Setting::Id::ShowWhitespaceInEditor,
                                      checked);
+    });
+
+    QCheckBox *showEol = new QCheckBox(tr("Show end of line"), this);
+    showEol->setChecked(
+        settings->value(Setting::Id::ShowEolInEditor, false).toBool());
+    connect(showEol, &QCheckBox::toggled, [](bool checked) {
+      Settings::instance()->setValue(Setting::Id::ShowEolInEditor, checked);
+    });
+
+    QComboBox *fallback = new QComboBox(this);
+    fallback->setEditable(true);
+    const QStringList encodings = {"GB18030", "GBK", "UTF-8", "UTF-16",
+                                   "Windows-1252", "ISO-8859-1"};
+    fallback->addItems(encodings);
+    QString current =
+        settings->value(Setting::Id::FallbackEncoding, "GB18030").toString();
+    int encodingIndex = fallback->findText(current);
+    if (encodingIndex < 0) {
+      fallback->addItem(current);
+      encodingIndex = fallback->count() - 1;
+    }
+    fallback->setCurrentIndex(encodingIndex);
+    connect(fallback, &QComboBox::currentTextChanged, [](const QString &text) {
+      if (!text.isEmpty())
+        Settings::instance()->setValue(Setting::Id::FallbackEncoding, text);
     });
 
     QComboBox *indent = new QComboBox(this);
@@ -736,6 +771,8 @@ public:
     layout->addRow(tr("Font:"), font);
     layout->addRow(tr("Font size:"), fontSize);
     layout->addRow(tr("Whitespace:"), showWhitespace);
+    layout->addRow(tr("Line endings:"), showEol);
+    layout->addRow(tr("Fallback encoding:"), fallback);
     layout->addRow(tr("Indent using:"), indent);
     layout->addRow(tr("Indent width:"), indentWidth);
     layout->addRow(tr("Tab width:"), tabWidth);
@@ -866,6 +903,54 @@ private:
   QPushButton *mInstallButton;
 };
 #endif
+
+class IntegrationPanel : public QWidget {
+  Q_OBJECT
+
+public:
+  IntegrationPanel(QWidget *parent = nullptr) : QWidget(parent) {
+    QLabel *help = new QLabel(
+        tr("Add history, blame, and status entries to the file manager "
+           "context menu. Gittyup only opens a view. It does not draw status "
+           "icons on files."),
+        this);
+    help->setWordWrap(true);
+
+    mStatus = new QLabel(this);
+    QPushButton *install = new QPushButton(tr("Install"), this);
+    QPushButton *remove = new QPushButton(tr("Uninstall"), this);
+    connect(install, &QPushButton::clicked, this, [this] {
+      FileManagerIntegration::install();
+      refresh();
+    });
+    connect(remove, &QPushButton::clicked, this, [this] {
+      FileManagerIntegration::uninstall();
+      refresh();
+    });
+
+    QHBoxLayout *buttons = new QHBoxLayout;
+    buttons->addWidget(install);
+    buttons->addWidget(remove);
+    buttons->addStretch();
+
+    QVBoxLayout *layout = new QVBoxLayout(this);
+    layout->addWidget(help);
+    layout->addWidget(mStatus);
+    layout->addLayout(buttons);
+    layout->addStretch();
+    refresh();
+  }
+
+private:
+  void refresh() {
+    QStringList installed = FileManagerIntegration::installedFileManagers();
+    mStatus->setText(installed.isEmpty()
+                         ? tr("Not installed")
+                         : tr("Installed for: %1").arg(installed.join(", ")));
+  }
+
+  QLabel *mStatus;
+};
 
 } // namespace
 
@@ -1020,6 +1105,13 @@ SettingsDialog::SettingsDialog(Index index, QWidget *parent)
 
   stack->addWidget(new TerminalPanel(this));
 #endif
+
+  QAction *integration =
+      toolbar->addAction(QIcon(":/tools.png"), tr("Files"));
+  integration->setData(stack->count());
+  integration->setActionGroup(actions);
+  integration->setCheckable(true);
+  stack->addWidget(new IntegrationPanel(this));
 
   // Hook up edit button.
   connect(edit, &QPushButton::clicked, stack, [stack] {

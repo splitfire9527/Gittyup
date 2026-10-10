@@ -46,7 +46,11 @@
 #include "git2/sys/repository.h"
 #include "git2/sys/errors.h"
 #include "git2/attr.h"
+#include <cstring>
+#include <QHash>
 #include <QJsonArray>
+#include <QSettings>
+#include <QTextCodec>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QMap>
@@ -63,6 +67,86 @@
 namespace git {
 
 namespace {
+
+bool startsWithBytes(const QByteArray &text, const char *bytes, int length) {
+  return text.size() >= length && memcmp(text.constData(), bytes, length) == 0;
+}
+
+int bomLength(const QByteArray &text) {
+  if (startsWithBytes(text, "\xEF\xBB\xBF", 3))
+    return 3;
+  if (startsWithBytes(text, "\xFF\xFE\x00\x00", 4) ||
+      startsWithBytes(text, "\x00\x00\xFE\xFF", 4))
+    return 4;
+  if (startsWithBytes(text, "\xFF\xFE", 2) || startsWithBytes(text, "\xFE\xFF", 2))
+    return 2;
+  return 0;
+}
+
+QByteArray bomEncodingName(const QByteArray &text) {
+  if (startsWithBytes(text, "\xEF\xBB\xBF", 3))
+    return "UTF-8";
+  if (startsWithBytes(text, "\xFF\xFE\x00\x00", 4))
+    return "UTF-32LE";
+  if (startsWithBytes(text, "\x00\x00\xFE\xFF", 4))
+    return "UTF-32BE";
+  if (startsWithBytes(text, "\xFF\xFE", 2))
+    return "UTF-16LE";
+  if (startsWithBytes(text, "\xFE\xFF", 2))
+    return "UTF-16BE";
+  return {};
+}
+
+bool strictUtf8(const QByteArray &text) {
+  QStringDecoder decoder(QStringConverter::Utf8);
+  // decode() returns a wrapper. It only reports errors once converted.
+  QString decoded = decoder.decode(text);
+  Q_UNUSED(decoded)
+  return !decoder.hasError();
+}
+
+QString decodeNamed(const QByteArray &text, const QByteArray &name, bool strict,
+                    bool *ok) {
+  if (ok)
+    *ok = false;
+  if (name.isEmpty())
+    return {};
+
+  if (auto enc = QStringConverter::encodingForName(name.constData())) {
+    QStringDecoder decoder(*enc);
+    QString decoded = decoder.decode(text);
+    if (!strict || !decoder.hasError()) {
+      if (ok)
+        *ok = true;
+      return decoded;
+    }
+    return {};
+  }
+
+  QTextCodec *codec = QTextCodec::codecForName(name);
+  if (!codec)
+    return {};
+  if (!strict) {
+    if (ok)
+      *ok = true;
+    return codec->toUnicode(text);
+  }
+  QTextCodec::ConverterState state;
+  QString decoded = codec->toUnicode(text.constData(), text.size(), &state);
+  if (state.invalidChars != 0)
+    return {};
+  if (ok)
+    *ok = true;
+  return decoded;
+}
+
+QByteArray encodeNamed(const QString &text, const QByteArray &name) {
+  if (auto enc = QStringConverter::encodingForName(name.constData()))
+    return QStringEncoder(*enc).encode(text);
+  if (QTextCodec *codec = QTextCodec::codecForName(name))
+    return codec->fromUnicode(text);
+  return text.toUtf8();
+}
 
 const QString kConfigDir = "gittyup";
 const QString kConfigFile = "config";
@@ -345,7 +429,8 @@ Diff Repository::diffTreeToIndex(const Tree &tree, const Index &index,
 
 Diff Repository::diffIndexToWorkdir(const Index &index,
                                     Diff::Callbacks *callbacks,
-                                    bool ignoreWhitespace) const {
+                                    bool ignoreWhitespace,
+                                    unsigned extraFlags) const {
   git_diff_options opts = GIT_DIFF_OPTIONS_INIT;
   opts.flags |= GIT_DIFF_INCLUDE_TYPECHANGE;
 #ifndef USE_SYSTEM_LIBGIT2
@@ -357,6 +442,7 @@ Diff Repository::diffIndexToWorkdir(const Index &index,
 
   if (ignoreWhitespace)
     opts.flags |= GIT_DIFF_IGNORE_WHITESPACE;
+  opts.flags |= extraFlags;
 
   if (callbacks) {
     opts.progress_cb = &Diff::Callbacks::progress;
@@ -366,6 +452,58 @@ Diff Repository::diffIndexToWorkdir(const Index &index,
   git_diff *diff = nullptr;
   git_diff_index_to_workdir(&diff, d->repo, index, &opts);
   return Diff(diff);
+}
+
+Diff Repository::diffTrees(const Tree &oldTree, const Tree &newTree,
+                           const QString &path) const {
+  git_diff_options opts = GIT_DIFF_OPTIONS_INIT;
+  QByteArray buffer = path.toUtf8();
+  char *data = buffer.data();
+  if (!path.isEmpty()) {
+    opts.pathspec.count = 1;
+    opts.pathspec.strings = &data;
+    if (!path.contains('*') && !path.contains('?'))
+      opts.flags |= GIT_DIFF_DISABLE_PATHSPEC_MATCH;
+  }
+
+  git_diff *diff = nullptr;
+  git_tree *old = oldTree.isValid() ? static_cast<git_tree *>(oldTree) : nullptr;
+  git_tree *neu = newTree.isValid() ? static_cast<git_tree *>(newTree) : nullptr;
+  git_diff_tree_to_tree(&diff, d->repo, old, neu, &opts);
+  return Diff(diff);
+}
+
+QSet<QString> Repository::eolOnlyPaths(const Index &index) const {
+  // libgit2 still lists a file when only its line endings changed. The
+  // whitespace flag affects the generated hunks, so an EOL-only file is one
+  // that has hunks normally and none when end-of-line whitespace is ignored.
+  Diff plain = diffIndexToWorkdir(index);
+  Diff ignored = diffIndexToWorkdir(index, nullptr, false,
+                                    GIT_DIFF_IGNORE_WHITESPACE_EOL);
+  QHash<QString, int> ignoredHunks;
+  if (ignored.isValid()) {
+    for (int i = 0; i < ignored.count(); ++i) {
+      git_delta_t status = ignored.status(i);
+      if (status == GIT_DELTA_UNTRACKED || status == GIT_DELTA_IGNORED)
+        continue;
+      Patch patch = ignored.patch(i);
+      ignoredHunks.insert(ignored.name(i), patch.isValid() ? patch.count() : 0);
+    }
+  }
+
+  QSet<QString> paths;
+  if (!plain.isValid())
+    return paths;
+  for (int i = 0; i < plain.count(); ++i) {
+    git_delta_t status = plain.status(i);
+    if (status == GIT_DELTA_UNTRACKED || status == GIT_DELTA_IGNORED)
+      continue;
+    Patch patch = plain.patch(i);
+    int plainHunks = patch.isValid() ? patch.count() : 0;
+    if (plainHunks > 0 && ignoredHunks.value(plain.name(i), 0) == 0)
+      paths.insert(plain.name(i));
+  }
+  return paths;
 }
 
 Reference Repository::head() const {
@@ -1070,11 +1208,79 @@ QStringConverter::Encoding Repository::encoding() const {
 }
 
 QString Repository::decode(const QByteArray &text) const {
-  return QStringDecoder{encoding()}.decode(text);
+  return decode(text, QString());
+}
+
+QString Repository::decode(const QByteArray &text, const QString &path) const {
+  auto remember = [&](const QByteArray &name, const QString &decoded) {
+    if (d && !path.isEmpty())
+      d->encodingNames.insert(path, name);
+    return decoded;
+  };
+
+  if (!path.isEmpty()) {
+    QString attr = attributeValue("working-tree-encoding", path);
+    if (!attr.isEmpty() && attr != "unspecified" && attr != "unset") {
+      bool ok = false;
+      QString decoded = decodeNamed(text, attr.toUtf8(), false, &ok);
+      if (ok)
+        return remember(attr.toUtf8(), decoded);
+    }
+  }
+
+  QByteArray bom = bomEncodingName(text);
+  if (!bom.isEmpty()) {
+    bool ok = false;
+    QString decoded =
+        decodeNamed(text.mid(bomLength(text)), bom, false, &ok);
+    if (ok)
+      return remember(bom, decoded);
+  }
+
+  if (strictUtf8(text))
+    return remember("UTF-8", QString::fromUtf8(text));
+
+  QString gui = gitConfig().value<QString>("gui.encoding");
+  if (!gui.isEmpty() && gui.compare("utf-8", Qt::CaseInsensitive) != 0 &&
+      gui.compare("utf8", Qt::CaseInsensitive) != 0) {
+    bool ok = false;
+    QString decoded = decodeNamed(text, gui.toUtf8(), true, &ok);
+    if (ok)
+      return remember(gui.toUtf8(), decoded);
+  }
+
+  QByteArray fallback =
+      QSettings()
+          .value("editor/encoding/fallback", "GB18030")
+          .toString()
+          .toUtf8();
+  if (fallback.isEmpty())
+    fallback = "GB18030";
+  bool ok = false;
+  QString decoded = decodeNamed(text, fallback, false, &ok);
+  if (ok)
+    return remember(fallback, decoded);
+  return remember("UTF-8", QString::fromUtf8(text));
+}
+
+QByteArray Repository::encode(const QString &text, const QString &path) const {
+  QByteArray name;
+  if (d && d->encodingNames.contains(path))
+    name = d->encodingNames.value(path);
+  if (name.isEmpty() && !path.isEmpty()) {
+    QString attr = attributeValue("working-tree-encoding", path);
+    if (!attr.isEmpty() && attr != "unspecified" && attr != "unset")
+      name = attr.toUtf8();
+  }
+  if (name.isEmpty()) {
+    QString gui = gitConfig().value<QString>("gui.encoding");
+    name = gui.isEmpty() ? QByteArray("UTF-8") : gui.toUtf8();
+  }
+  return encodeNamed(text, name);
 }
 
 QString Repository::attributeValue(const QString &attribute,
-                                   const QString &path) {
+                                   const QString &path) const {
   const char *value;
   uint32_t flags = 0;
   git_attr_get(&value, d->repo, flags, path.toLocal8Bit().data(),

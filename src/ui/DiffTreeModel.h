@@ -131,7 +131,7 @@ public:
    * \param index
    * \return
    */
-  bool discard(const QModelIndex &index);
+  bool discard(const QModelIndex &index, bool recordUndo = true);
   /*!
    * Setting the data to the item
    * \brief setData

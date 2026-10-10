@@ -13,6 +13,9 @@ void Setting::initialize(QMap<Id, QString> &keys) {
   keys[Id::TabWidth] = "editor/indent/tabwidth";
   keys[Id::ShowHeatmapInBlameMargin] = "editor/blame/heatmap";
   keys[Id::ShowWhitespaceInEditor] = "editor/view/showWhitespace";
+  keys[Id::ShowEolInEditor] = "editor/view/showEol";
+  keys[Id::FallbackEncoding] = "editor/encoding/fallback";
+  keys[Id::ShowGroupsOnStart] = "window/groups/showOnStart";
   keys[Id::ColorTheme] = "window/theme";
   keys[Id::ShowFullRepoPath] = "window/path/full";
   keys[Id::HideLogAutomatically] = "window/log/hide";

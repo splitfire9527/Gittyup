@@ -32,7 +32,8 @@ public:
   bool push(const Reference &ref);
 
   // Return the next commit that matches the given pathspec.
-  Commit next(const QString &pathspec = QString()) const;
+  // exact=false also matches files under a directory path.
+  Commit next(const QString &pathspec = QString(), bool exact = true) const;
 
 protected:
   RevWalk(git_revwalk *walker);

@@ -311,6 +311,7 @@ public:
 
   // pathspec search filter
   void setPathspec(const QString &path);
+  void showPathAction(const QString &action, const QString &path);
 
   git::Commit nextRevision(const QString &path) const;
   git::Commit previousRevision(const QString &path) const;

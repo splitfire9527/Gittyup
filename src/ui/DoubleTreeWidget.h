@@ -15,7 +15,10 @@
 #include "git/Index.h"
 #include <QModelIndexList>
 #include "conf/Settings.h"
+#include <QSet>
+#include <QStringList>
 
+class QComboBox;
 class QTreeView;
 class TreeView;
 class BlameEditor;
@@ -42,6 +45,7 @@ public:
   void setDiff(const git::Diff &diff, const QString &file = QString(),
                const QString &pathspec = QString()) override;
   void setLoading() override;
+  void showBlame(const QString &path);
 
   void cancelBackgroundTasks() override;
 
@@ -71,6 +75,13 @@ private:
   void loadEditorContent(const QModelIndexList &indexes);
   void toggleCollapseStagedFiles();
   void toggleCollapseUnstagedFiles();
+  void applyEolFilter(int index);
+  void collectVisibleFiles(const QModelIndex &parent, QStringList &files,
+                           QModelIndexList &leaves) const;
+  void selectAllUnstaged();
+  void stageVisibleUnstaged();
+  void discardVisibleUnstaged();
+  void normalizeVisibleEol();
   QAction *setupAppearanceAction(const char *name, Setting::Id id,
                                  bool defaultValue = false);
 
@@ -80,6 +91,10 @@ private:
   StatePushButton *collapseButtonStagedFiles{nullptr};
   StatePushButton *collapseButtonUnstagedFiles{nullptr};
   QLabel *mUnstagedCommitedFiles{nullptr};
+  QComboBox *mEolFilter{nullptr};
+  QWidget *mUnstagedBatch{nullptr};
+  bool mEolOnlyValid = false;
+  QSet<QString> mEolOnly;
 
   struct SelectedFile {
     QString filename;

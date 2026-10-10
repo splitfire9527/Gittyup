@@ -21,6 +21,9 @@ class DeleteBranchDialog : public QMessageBox {
 
 public:
   DeleteBranchDialog(const git::Branch &branch, QWidget *parent = nullptr);
+
+signals:
+  void aboutToRemove();
 };
 
 #endif

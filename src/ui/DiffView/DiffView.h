@@ -24,6 +24,8 @@
 #include <QTimer>
 
 class QCheckBox;
+class QLabel;
+class QResizeEvent;
 class QVBoxLayout;
 class FileWidget;
 class DiffTreeModel;
@@ -42,11 +44,24 @@ const QString kStyleSheet = "DiffView {"
                             "  padding-top: -4"
                             "}"
                             "DiffView FileWidget {"
-                            "  background-clip: content;"
-                            "  border-image: url(:/shadow.png) 8 8 8 8;"
-                            "  border-width: 8;"
-                            "  padding-left: -2;"
-                            "  padding-top: -2"
+                            "  background: palette(base);"
+                            "  border: 1px solid palette(mid);"
+                            "  margin: 6px 4px;"
+                            "}"
+                            "DiffView QFrame#FileHeader {"
+                            "  background: palette(window);"
+                            "  border-bottom: 1px solid palette(mid);"
+                            "}"
+                            "DiffView QFrame#HunkHeader {"
+                            "  background: transparent;"
+                            "  border: none;"
+                            "  border-top: 1px solid palette(midlight);"
+                            "}"
+                            "DiffView QLabel#StickyFileHeader {"
+                            "  background: palette(window);"
+                            "  border-bottom: 1px solid palette(mid);"
+                            "  padding: 4px 8px;"
+                            "  font-weight: bold;"
                             "}";
 
 const QString kButtonStyleFmt = "QToolButton {"
@@ -126,11 +141,13 @@ signals:
   void fileStageStateChanged(git::Index::StagedState state);
 
 protected:
+  void resizeEvent(QResizeEvent *event) override;
   void dropEvent(QDropEvent *event) override;
   void dragEnterEvent(QDragEnterEvent *event) override;
   void paintEvent(QPaintEvent *event) override;
 
 private:
+  void updateStickyHeader();
   bool canFetchMore();
   void fetchMore(int fetchWidgets = 4);
   void fetchAll(int index = -1);
@@ -142,6 +159,7 @@ private:
   git::Diff mStagedDiff;
 
   QList<FileWidget *> mFiles;
+  QLabel *mStickyHeader = nullptr;
   QList<QMetaObject::Connection> mConnections;
 
   QList<PluginRef> mPlugins;
