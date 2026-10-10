@@ -41,9 +41,16 @@ bool TreeProxy::setData(const QModelIndex &index, const QVariant &value,
 }
 
 void TreeProxy::setEolFilter(EolFilter filter, const QSet<QString> &paths) {
+#if QT_VERSION >= QT_VERSION_CHECK(6, 10, 0)
+  beginFilterChange();
+  mEolFilter = filter;
+  mEolOnly = paths;
+  endFilterChange(QSortFilterProxyModel::Direction::Rows);
+#else
   mEolFilter = filter;
   mEolOnly = paths;
   invalidateFilter();
+#endif
 }
 
 bool TreeProxy::matchesEol(const QModelIndex &index) const {
